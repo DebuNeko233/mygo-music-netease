@@ -4,7 +4,7 @@
 
 ## 安装和使用
 
-1. 打开 MyGo Music → 设置 → 插件 → `+` → 从文件夹安装，选择本项目目录；也可选择 `dist/netease-0.1.0.zip`。
+1. 打开 MyGo Music → 设置 → 插件 → `+` → 从 GitHub 安装，填入 `sogud/mygo-music-netease`。也可从 [Releases](https://github.com/sogud/mygo-music-netease/releases) 下载 ZIP 后从本地安装，或选择本项目文件夹。
 2. 核对插件仅请求 `music.163.com`、`interfacepc.music.163.com` 网络权限，确认安装。
 3. 在来源选择器中选择 **网易云音乐**。未登录也可搜索、浏览推荐歌单和排行榜、播放平台允许的完整曲目。
 4. 点击 **登录**，用网易云音乐手机 App 扫码并确认，读取自己的歌单和喜欢的音乐。请勿把二维码或 Cookie 发到聊天中。
@@ -45,4 +45,4 @@ npm run pack
 
 请求协议和数据转换移植自 [sogud/mygo-cloudmusic](https://github.com/sogud/mygo-cloudmusic)，来源与改动见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。许可为 [AGPL-3.0](LICENSE)。
 
-这是非官方插件。旧客户端上游曾因网易云要求而下线；接口、服务条款及分发限制可能变化，本项目不保证持续可用。当前仅本地开发和安装，未公开发布。
+这是非官方插件。旧客户端上游曾因网易云要求而下线；接口、服务条款及分发限制可能变化，本项目不保证持续可用。源码与安装包遵循 AGPL-3.0 提供，音乐内容和服务访问权不属于本项目的许可范围。
