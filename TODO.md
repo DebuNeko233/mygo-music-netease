@@ -1,5 +1,7 @@
 # TODO
 
+- [x] 2026-11-07 01:57 +0800 · Codex（ChatGPT 委派 / Mac mini）· 用户授权发布后已推送 93e9a4e 并公开发布 v0.1.1，附 netease-0.1.1.zip；语法检查、17 项测试及包清单核对通过，GitHub 资产 SHA-256 与本地一致。发布链接：https://github.com/sogud/mygo-music-netease/releases/tag/v0.1.1 。未操作 issues，汽水保持暂停；本机已安装的 local.2 与发布版功能代码一致，-460 仍仅缓解。
+
 - [x] 2026-11-07 01:54 +0800 · Codex（ChatGPT 委派 / Mac mini）· 修复发现页六个入口未提供 imageUrl 的问题：使用公开推荐歌单封面配图，漫游列表可独立加载封面；更新 index.js、现有异步测试及版本清单。已安装 local.2 到正式 MyGo Music 0.1.6，实际窗口确认六张封面显示，原登录数据保留；访客 moejs 与相关测试通过。按用户“发一版本”准备 0.1.1，远端 main 无新增差异。
 
 - [x] 2026-11-07 01:48 +0800 · Codex（ChatGPT 委派 / Mac mini）· 按“安装下”将 `plugin.json` 标为 `0.1.1-local.1`，备份旧代码至 `tmp/mygo-music-verification/netease-before-local-fix.zip`，安装 5 个发布文件到 `~/Library/Application Support/MyGo Music/plugins/netease/`；逐文件确认与源码相同，plugin-data 文件元数据未改变。重启正式 MyGo Music 0.1.6，窗口确认新导航及首页入口可见、已有登录和歌单保留；已安装代码在隔离访客 moejs 中返回 24 个公开歌单，3 种漫游与全部私人页面登录门控通过。未操作个人推荐或播放；-460 仍仅缓解。未安装汽水、提交、推送或发布。
