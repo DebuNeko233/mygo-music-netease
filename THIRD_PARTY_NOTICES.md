@@ -25,3 +25,8 @@ The host itself is licensed under AGPL-3.0 and is distributed separately.
 NetEase Cloud Music names and content belong to their respective owners. This
 project is not an official NetEase or MyGo Music release. The license covers
 this plugin's source, not music content or service access rights.
+
+Recommendation endpoint shapes and FM modes were also checked against
+AkinoKaede/mygo-music-netease-cloud-music, commit
+`c988df7f4d787c1a133ba66e1f4f9dd71a2650cf` (`index.js`, AGPL-3.0),
+and the public playlist metadata returned by NetEase for private radar.
