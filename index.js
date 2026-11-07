@@ -134,8 +134,14 @@ async function request(path, params = {}, options = {}) {
     headers.Cookie = Object.keys(header).map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(header[key])}`).join("; ");
   } else {
     url = SITE + path;
-    const query = new URLSearchParams(params).toString();
-    if (query) url += `?${query}`;
+    if (options.form !== undefined) {
+      init.method = "POST";
+      init.body = options.form;
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+    } else {
+      const query = new URLSearchParams(params).toString();
+      if (query) url += `?${query}`;
+    }
     const cookie = cookieHeader(activeSession.cookies);
     if (cookie) headers.Cookie = cookie;
   }
@@ -295,13 +301,16 @@ async function profileFor(activeSession) {
 }
 
 export async function account() {
-  currentSession();
-  if (!session.cookies.MUSIC_U) return null;
-  if (session.profile && Date.now() - profileCheckedAt < 60000) return session.profile;
+  const activeSession = currentSession();
+  if (!activeSession.cookies.MUSIC_U) return null;
+  if (activeSession.profile && Date.now() - profileCheckedAt < 60000) return activeSession.profile;
   try {
-    const profile = await profileFor(session);
+    const profile = await profileFor(activeSession);
+    // A QR login can finish without another epoch change. Do not apply the
+    // previous account's profile or sign-out to that newly accepted session.
+    if (activeSession !== session) throw new Error("账号状态已改变，请重试");
     if (!profile) { clearSession(); return null; }
-    session.profile = profile;
+    activeSession.profile = profile;
     profileCheckedAt = Date.now();
     persistSession();
     return profile;
@@ -555,6 +564,83 @@ export async function like({ id, on }) {
   await requireAccount();
   await eapi("/api/radio/like", { alg: "itembased", trackId: identity.audio, like: String(!!on), time: "3" });
   likedCache = null;
+}
+
+function checkPlaylistSession(activeSession, generation) {
+  if (generation !== epoch || activeSession !== session) {
+    throw new Error("账号状态已改变，请重试");
+  }
+}
+
+async function submitPlaylistTracks(op, id, ids, activeSession, generation) {
+  checkPlaylistSession(activeSession, generation);
+  const form = new URLSearchParams({ op, pid: id, imme: "true", trackIds: JSON.stringify(ids.map(Number)) });
+  if (activeSession.cookies.__csrf) form.set("csrf_token", activeSession.cookies.__csrf);
+  try {
+    const data = await request("/api/playlist/manipulate/tracks", {}, {
+      session: activeSession, form: form.toString(), keepSession: true, codes: [200, 502],
+    });
+    checkPlaylistSession(activeSession, generation);
+    return data;
+  } catch (error) {
+    // Preserve signIn so the host can offer login; a content 401 keeps session.
+    error.message = `${op === "add" ? "添加到歌单" : "移出歌单"}失败：${error.message}`;
+    throw error;
+  }
+}
+
+async function playlistTrackIDs(id, activeSession, generation) {
+  checkPlaylistSession(activeSession, generation);
+  const data = await request("/api/v6/playlist/detail", { id, n: PLAYLIST_LIMIT }, {
+    session: activeSession, keepSession: true,
+  });
+  checkPlaylistSession(activeSession, generation);
+  const source = data.playlist;
+  if (String(source?.id) !== id || !Array.isArray(source.trackIds) || source.trackIds.length < source.trackCount) {
+    throw new Error("无法确认歌单的完整歌曲列表，请刷新后重试");
+  }
+  return new Set(source.trackIds.map(track => String(track.id)));
+}
+
+async function manipulatePlaylistTracks(op, id, trackIds) {
+  const pid = String(Number(idOf(id)));
+  if (trackIds == null) trackIds = [];
+  if (!Array.isArray(trackIds)) throw new Error("无效的歌曲列表");
+  const ids = [...new Set(trackIds.map(value => {
+    const identity = trackIdentity(value);
+    if (identity.program) throw fail("unsupported", "暂不支持将播客节目添加到歌曲歌单或从中移除");
+    return String(Number(identity.audio));
+  }))];
+  if (!ids.length) return;
+  const activeSession = currentSession();
+  const generation = epoch;
+  await requireAccount();
+  checkPlaylistSession(activeSession, generation);
+  let data = await submitPlaylistTracks(op, pid, ids, activeSession, generation);
+  if (op === "add" && Number(data.code) === 502) {
+    // A duplicate rejects the whole batch. Only retry songs proved absent;
+    // never treat an unexplained 502 or a concurrent edit as successful.
+    const present = await playlistTrackIDs(pid, activeSession, generation);
+    const missing = ids.filter(trackID => !present.has(trackID));
+    if (!missing.length) {
+      throw fail("duplicate", ids.length === 1 ? "这首歌已经在这个歌单里了" : "这些歌曲已经在这个歌单里了");
+    }
+    if (missing.length < ids.length) {
+      data = await submitPlaylistTracks(op, pid, missing, activeSession, generation);
+    }
+  }
+  if (Number(data.code) !== 200) {
+    throw new Error(`${op === "add" ? "添加到歌单" : "移出歌单"}未完成（${data.code}），请刷新歌单后重试`);
+  }
+  likedCache = null;
+}
+
+export async function addToPlaylist({ id, trackIds }) {
+  await manipulatePlaylistTracks("add", id, trackIds);
+}
+
+export async function removeFromPlaylist({ id, trackIds }) {
+  await manipulatePlaylistTracks("del", id, trackIds);
 }
 
 export async function comments({ trackId, offset = 0 }) {

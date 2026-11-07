@@ -35,3 +35,8 @@ Modifications made on 2026-11-07: added read-only comment pages, subscribed
 podcasts and episode browsing, and kept program identity separate from its
 audio ID for playback and comments; retained server cookie updates on
 transient playback refusals for the existing bounded retry.
+
+Playlist track editing is adapted from jieye666's contribution in
+https://github.com/sogud/mygo-music-netease/pull/6, commit
+`29c6cffd6990d527a3d9e46757824dc0f6903881` (AGPL-3.0-only), with
+current-session checks, podcast ID rejection, and conservative duplicate retry.
