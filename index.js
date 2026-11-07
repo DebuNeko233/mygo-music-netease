@@ -490,14 +490,32 @@ export async function album({ id }) {
   return { album: toAlbum(data.album), tracks: (await songDetails((data.songs || []).map((song) => song.id), data.songs || [])).map(toTrack) };
 }
 
+async function artistAlbums(id) {
+  // The host has no artist-album pagination action. Collect every page here,
+  // advancing by raw page length so overlapping albums do not shift offsets.
+  const albums = new Map();
+  for (let offset = 0; offset < 10000;) {
+    const data = await request(`/api/artist/albums/${id}`, { limit: PAGE_SIZE, offset });
+    const items = data.hotAlbums || [];
+    const previousSize = albums.size;
+    for (const item of items) albums.set(String(item.id), toAlbum(item));
+    if (!data.more) return [...albums.values()];
+    if (!items.length || albums.size === previousSize) {
+      throw new Error("网易云未返回完整的歌手专辑列表，请稍后重试");
+    }
+    offset += items.length;
+  }
+  throw new Error("歌手专辑过多，暂时无法完整加载");
+}
+
 export async function artist({ id }) {
   id = idOf(id);
   const [detail, albums] = await Promise.all([
-    request(`/api/v1/artist/${id}`), request(`/api/artist/albums/${id}`, { limit: 30, offset: 0 }),
+    request(`/api/v1/artist/${id}`), artistAlbums(id),
   ]);
   if (!detail.artist) throw fail("unavailable", "歌手不可用");
   return {
-    artist: toArtist(detail.artist), albums: (albums.hotAlbums || []).map(toAlbum),
+    artist: toArtist(detail.artist), albums,
     tracks: (await songDetails((detail.hotSongs || []).map((song) => song.id), detail.hotSongs || [])).map(toTrack),
   };
 }
