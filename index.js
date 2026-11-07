@@ -22,6 +22,8 @@ let profileCheckedAt = 0;
 let likedCache = null;
 const pendingStreams = new Map();
 let discoveryCovers = null;
+let heartState = null;
+let pendingHeart = null;
 
 function currentSession() {
   if (!session) session = host.storage.get("session") || { cookies: {}, profile: null };
@@ -92,6 +94,8 @@ function clearSession() {
   profileCheckedAt = 0;
   likedCache = null;
   pendingStreams.clear();
+  heartState = null;
+  pendingHeart = null;
   host.storage.remove("session");
 }
 
@@ -273,14 +277,14 @@ function toComment(comment) {
   };
 }
 
-async function songDetails(ids, originals = []) {
+async function songDetails(ids, originals = [], options = {}) {
   if (!ids.length) return [];
   const batches = [];
   for (let offset = 0; offset < ids.length; offset += 400) {
     batches.push(ids.slice(offset, offset + 400));
   }
   const results = await Promise.all(batches.map(async (batch) => {
-    const data = await eapi("/api/v3/song/detail", { c: JSON.stringify(batch.map((id) => ({ id: Number(idOf(id)) }))) });
+    const data = await eapi("/api/v3/song/detail", { c: JSON.stringify(batch.map((id) => ({ id: Number(idOf(id)) }))) }, options);
     const privileges = new Map((data.privileges || []).map((p) => [String(p.id), p]));
     return (data.songs || []).map((song) => ({ ...song, privilege: privileges.get(String(song.id)) || song.privilege }));
   }));
@@ -349,6 +353,8 @@ export async function signIn() {
       if (!pending.profile) throw new Error("无法读取已登录账号，请重新扫码");
       if (startedEpoch !== epoch) break;
       session = pending;
+      heartState = null;
+      pendingHeart = null;
       profileCheckedAt = Date.now();
       likedCache = null;
       persistSession();
@@ -394,23 +400,40 @@ function discoveryCover(index) {
   return discoveryCovers?.length ? discoveryCovers[index % discoveryCovers.length] : "";
 }
 
+async function discoverySection() {
+  try {
+    return { title: "推荐歌单", playlists: await discoveryPlaylists() };
+  } catch (error) {
+    // Authentication failures still reach the host's sign-in flow. Optional
+    // recommendations and cover art must not hide the navigation or radio.
+    if (error.code === "signIn") throw error;
+    return {
+      title: "推荐歌单", empty: "推荐歌单暂时无法加载，点击「查看全部」重试；其他入口仍可使用。",
+      morePage: "discovery",
+    };
+  }
+}
+
 export async function home() {
-  const playlists = await discoveryPlaylists();
+  const recommendations = await discoverySection();
   return {
-    title: "发现音乐", subtitle: "网易云音乐 · 登录后可读取你的歌单和喜欢的音乐",
+    title: "发现音乐", subtitle: "网易云音乐 · 发现喜欢的音乐",
     sections: [
       { title: "为你推荐", links: [
-        { title: "每日推荐", subtitle: "登录后查看今天的推荐歌曲", page: "daily", imageUrl: discoveryCover(0) },
+        { title: "每日推荐", subtitle: "每天更新，为你推荐好音乐", page: "daily", imageUrl: discoveryCover(0) },
         { title: "私人雷达", subtitle: "发现属于你的音乐", page: "radar", imageUrl: discoveryCover(1) },
         { title: "个性化歌单", subtitle: "网易云为你推荐的歌单", page: "recommendations", imageUrl: discoveryCover(2) },
       ] },
       { title: "私人漫游", stations: stationList() },
-      { title: "推荐歌单", playlists },
+      recommendations,
     ],
   };
 }
 
 export async function browse({ page }) {
+  if (page === "discovery") {
+    return { title: "推荐歌单", sections: [{ playlists: await discoveryPlaylists(), empty: "暂时没有推荐歌单" }] };
+  }
   if (page === "radar") {
     // NetEase's dynamic playlist is selected for the signed-in listener.
     // Never label its anonymous response as someone's personal radar.
@@ -720,11 +743,111 @@ function stationList() {
 }
 
 export async function stations() {
-  if (discoveryCovers === null) await discoveryPlaylists();
+  if (discoveryCovers === null) await discoverySection();
   return stationList();
 }
 
+// Candidate only: HEART is deliberately absent from stationList until live
+// account and continuation checks pass. This uses NetEase's intelligence API,
+// never the FAMILIAR radio or a local shuffle as a substitute.
+function checkHeartAccount(activeSession, generation) {
+  if (activeSession !== session || generation !== epoch) {
+    throw new Error("账号状态已改变，请重试");
+  }
+}
+
+async function startHeart(activeSession, generation, profile) {
+  let likedPlaylist;
+  for (let offset = 0; offset < 2000; offset += 200) {
+    const data = await request("/api/user/playlist", { uid: profile.id, limit: 200, offset }, {
+      session: activeSession, keepSession: true,
+    });
+    checkHeartAccount(activeSession, generation);
+    if (!Array.isArray(data.playlist)) throw new Error("无法读取喜欢的音乐歌单");
+    likedPlaylist = data.playlist.find(item => item && Number(item.specialType) === 5 &&
+      String(item.creator?.userId) === profile.id);
+    if (likedPlaylist) break;
+    if (!data.more || data.playlist.length < 200) break;
+  }
+  if (!likedPlaylist) throw fail("unavailable", "未找到当前账号的喜欢歌单，暂时无法开启心动模式");
+  const playlistID = idOf(likedPlaylist.id);
+  const data = await request("/api/v6/playlist/detail", { id: playlistID, n: 1 }, {
+    session: activeSession, keepSession: true,
+  });
+  checkHeartAccount(activeSession, generation);
+  const playlist = data.playlist;
+  if (!playlist || String(playlist.id) !== playlistID || Number(playlist.specialType) !== 5 ||
+      String(playlist.creator?.userId) !== profile.id) {
+    throw fail("unavailable", "无法确认当前账号的喜欢歌单");
+  }
+  const tracks = playlist.trackIds || playlist.tracks;
+  if (!Array.isArray(tracks)) throw new Error("网易云未返回喜欢歌单的歌曲列表");
+  if (!tracks.length) throw fail("unavailable", "喜欢歌单为空，请先在网易云喜欢一首歌曲");
+  const seedTrack = tracks.find(track => track && /^\d+$/.test(String(track.id)) &&
+    Number.isSafeInteger(Number(track.id)) && Number(track.id) > 0);
+  if (!seedTrack) throw fail("unavailable", "喜欢歌单没有可用的种子歌曲");
+  const seed = idOf(seedTrack.id);
+  return { uid: profile.id, generation, playlistID, seed, last: seed, seen: [] };
+}
+
+async function loadHeart(activeSession, generation) {
+  const profile = await requireAccount();
+  checkHeartAccount(activeSession, generation);
+  const state = heartState?.generation === generation && heartState.uid === profile.id
+    ? heartState : await startHeart(activeSession, generation, profile);
+  checkHeartAccount(activeSession, generation);
+  const seen = new Set(state.seen);
+  let cursor = state.last;
+  // Advance over repeated batches, but do not loop indefinitely if the
+  // service cannot supply a new recommendation or stops advancing its cursor.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const data = await eapi("/api/playmode/intelligence/list", {
+      songId: cursor, startMusicId: state.seed, playlistId: state.playlistID,
+      type: "fromPlayOne", count: 1,
+    }, { session: activeSession, keepSession: true });
+    checkHeartAccount(activeSession, generation);
+    if (!Array.isArray(data.data)) throw new Error("网易云未返回有效的心动推荐列表");
+    const songs = [];
+    let nextCursor = cursor;
+    for (const item of data.data) {
+      // Removed songs can leave null entries or empty songInfo records.
+      if (item == null) continue;
+      if (typeof item !== "object") throw new Error("网易云返回了无效的心动推荐歌曲");
+      if (item.songInfo == null) continue;
+      const id = idOf(item.songInfo.id);
+      nextCursor = id;
+      if (!seen.has(id)) { seen.add(id); songs.push(item.songInfo); }
+    }
+    if (songs.length) {
+      const ids = songs.map(song => idOf(song.id));
+      const tracks = (await songDetails(ids, songs, { session: activeSession, keepSession: true })).map(toTrack);
+      checkHeartAccount(activeSession, generation);
+      heartState = { ...state, last: nextCursor, seen: [...seen].slice(-200) };
+      return tracks;
+    }
+    // No new tracks need resolving; retain the service's cursor so the next
+    // invocation does not restart at the original repeated batch.
+    heartState = { ...state, last: nextCursor };
+    if (nextCursor === cursor) break;
+    cursor = nextCursor;
+  }
+  throw fail("unavailable", "网易云暂未返回新的心动推荐，请稍后重试");
+}
+
+async function heartNext() {
+  const activeSession = currentSession();
+  const generation = epoch;
+  if (pendingHeart?.session === activeSession && pendingHeart.generation === generation) {
+    return pendingHeart.promise;
+  }
+  const pending = { session: activeSession, generation, promise: loadHeart(activeSession, generation) };
+  pendingHeart = pending;
+  try { return await pending.promise; }
+  finally { if (pendingHeart === pending) pendingHeart = null; }
+}
+
 export async function stationNext({ id }) {
+  if (id === "HEART") return heartNext();
   if (!["DEFAULT", "FAMILIAR", "EXPLORE"].includes(id)) throw fail("unsupported", "没有这个漫游模式");
   await requireAccount();
   const data = await eapi("/api/v1/radio/get", { mode: id, limit: 3 });

@@ -40,3 +40,8 @@ Playlist track editing is adapted from jieye666's contribution in
 https://github.com/sogud/mygo-music-netease/pull/6, commit
 `29c6cffd6990d527a3d9e46757824dc0f6903881` (AGPL-3.0-only), with
 current-session checks, podcast ID rejection, and conservative duplicate retry.
+
+The unexposed heart-mode candidate is adapted from `HeartMode` in
+`internal/netease/radio.go` at the same preserved upstream commit. Its request
+uses NetEase's intelligence endpoint; live continuation and account validation
+remain pending, so the candidate is not listed in the plugin's navigation.
