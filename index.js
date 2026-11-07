@@ -95,6 +95,18 @@ function clearSession() {
   host.storage.remove("session");
 }
 
+function acceptResponseCookies(response, activeSession) {
+  const wasSignedIn = !!activeSession.cookies.MUSIC_U;
+  acceptCookies(response, activeSession.cookies);
+  if (activeSession === session) {
+    if (wasSignedIn && !activeSession.cookies.MUSIC_U) {
+      clearSession();
+      throw fail("signIn", "网易云登录状态已失效，请重新登录");
+    }
+    persistSession();
+  }
+}
+
 async function request(path, params = {}, options = {}) {
   const activeSession = options.session || currentSession();
   const startedEpoch = epoch;
@@ -148,11 +160,19 @@ async function request(path, params = {}, options = {}) {
   const code = Number(body.code);
   const allowed = options.codes || [200];
   if (!allowed.includes(code)) {
+    // Content access can be forbidden while the account is still signed in.
+    if (code === 401 && options.keepSession) {
+      acceptResponseCookies(response, activeSession);
+      throw fail("unavailable", "当前账号无权访问该内容");
+    }
     if ([301, 302, 401].includes(code)) {
       if (activeSession === session) clearSession();
       throw fail("signIn", "请重新登录网易云音乐");
     }
     if (code === 460 || code === -460) {
+      // A refused response can still renew NMTID. Keep the server's cookie
+      // update for the same device/account retry, including session expiry.
+      acceptResponseCookies(response, activeSession);
       const error = new Error(`网易云暂时拒绝了请求（${code}），请稍后重试`);
       error.neteaseCode = code;
       throw error;
@@ -160,15 +180,7 @@ async function request(path, params = {}, options = {}) {
     if (code === 405) throw new Error("网易云暂时限制了请求，请稍后再试");
     throw new Error(`网易云接口返回错误（${Number.isFinite(code) ? code : "未知"}）`);
   }
-  const wasSignedIn = !!activeSession.cookies.MUSIC_U;
-  acceptCookies(response, activeSession.cookies);
-  if (activeSession === session) {
-    if (wasSignedIn && !activeSession.cookies.MUSIC_U) {
-      clearSession();
-      throw fail("signIn", "网易云登录状态已失效，请重新登录");
-    }
-    persistSession();
-  }
+  acceptResponseCookies(response, activeSession);
   return body;
 }
 
@@ -205,6 +217,53 @@ function toPlaylist(playlist) {
     description: playlist.description || "", owner: playlist.creator?.nickname || "",
     trackCount: playlist.trackCount || 0, saved: !!playlist.subscribed,
     mine: !!session?.profile && String(playlist.creator?.userId) === session.profile.id,
+  };
+}
+
+function toShow(show) {
+  return {
+    id: String(show.id), name: show.name || "", imageUrl: secureURL(show.picUrl),
+    description: show.desc || "", publisher: show.dj?.nickname || "",
+    episodeCount: show.programCount || 0, subscribed: !!show.subed,
+  };
+}
+
+function toEpisode(program, show) {
+  const programID = idOf(program.id);
+  const audioID = program.mainSong?.id ? idOf(program.mainSong.id) : null;
+  const published = new Date(Number(program.createTime));
+  return {
+    // Keep the program ID for comments and the audio ID for playback. Missing
+    // audio stays visible so the host's next offset still counts this episode.
+    id: `program:${programID}${audioID ? ":" + audioID : ""}`,
+    name: program.name || "", showId: String(show.id),
+    artists: show.dj?.nickname ? [{ id: "", name: show.dj.nickname }] : [],
+    album: { id: "", name: show.name || "", imageUrl: secureURL(program.coverUrl || show.picUrl) },
+    duration: program.duration || program.mainSong?.duration || 0,
+    description: program.description || "",
+    published: published.getTime() > 0 ? published.toISOString().slice(0, 10) : "",
+    url: `${SITE}/program?id=${programID}`, unavailable: !audioID,
+  };
+}
+
+function trackIdentity(value) {
+  const match = /^program:(\d+)(?::(\d+))?$/.exec(String(value));
+  if (match) {
+    const program = idOf(match[1]);
+    return { program, audio: match[2] ? idOf(match[2]) : null, thread: `A_DJ_1_${program}` };
+  }
+  const audio = idOf(value);
+  return { audio, thread: `R_SO_4_${audio}` };
+}
+
+function toComment(comment) {
+  const quote = (comment.beReplied || []).map(reply =>
+    `${reply.user?.nickname || ""}：${reply.content || ""}`).join("\n");
+  return {
+    id: String(comment.commentId), author: comment.user?.nickname || "",
+    avatarUrl: secureURL(comment.user?.avatarUrl),
+    text: (comment.content || "") + (quote ? `\n\n回复：${quote}` : ""),
+    time: comment.time || 0, likes: comment.likedCount || 0, liked: !!comment.liked,
   };
 }
 
@@ -300,9 +359,10 @@ export async function search({ query, kind = "tracks", offset = 0 }) {
   const types = {
     tracks: [1, "songs", "songCount", toTrack], albums: [10, "albums", "albumCount", toAlbum],
     artists: [100, "artists", "artistCount", toArtist], playlists: [1000, "playlists", "playlistCount", toPlaylist],
+    shows: [1009, "djRadios", "djRadiosCount", toShow],
   };
   const type = types[kind];
-  if (!type) throw fail("unsupported", "首版支持歌曲、专辑、歌手和歌单搜索");
+  if (!type) throw fail("unsupported", "支持歌曲、专辑、歌手、歌单和播客搜索");
   const text = String(query || "").trim();
   if (!text) return { [kind]: [], more: false };
   offset = pageOffset(offset);
@@ -392,6 +452,38 @@ export async function playlist({ id }) {
   return result;
 }
 
+export async function shows() {
+  await requireAccount();
+  const result = new Map();
+  for (let offset = 0; offset < 2000;) {
+    const data = await request("/api/djradio/get/subed", { limit: 100, offset, total: "true" }, { keepSession: true });
+    const items = data.djRadios || [];
+    const previousSize = result.size;
+    for (const item of items) result.set(String(item.id), { ...toShow(item), subscribed: true });
+    if (!data.hasMore) return [...result.values()];
+    if (!items.length || result.size === previousSize) {
+      throw new Error("网易云未返回完整的播客订阅列表，请稍后重试");
+    }
+    offset += items.length;
+  }
+  throw new Error("播客订阅超过本版本支持的 2000 个，暂时无法完整加载");
+}
+
+export async function show({ id, offset = 0 }) {
+  id = idOf(id);
+  offset = pageOffset(offset);
+  const [detail, programs] = await Promise.all([
+    request("/api/djradio/v2/get", { id }, { keepSession: true }),
+    request("/api/dj/program/byradio", { radioId: id, limit: PAGE_SIZE, offset, asc: "false" }, { keepSession: true }),
+  ]);
+  if (!detail.data || String(detail.data.id) !== id) throw fail("unavailable", "播客不存在或当前账号无权访问");
+  return {
+    show: toShow(detail.data),
+    episodes: (programs.programs || []).map(program => toEpisode(program, detail.data)),
+    more: !!programs.more,
+  };
+}
+
 export async function album({ id }) {
   const data = await request(`/api/v1/album/${idOf(id)}`);
   if (!data.album) throw fail("unavailable", "专辑不可用");
@@ -426,25 +518,47 @@ export async function liked({ offset = 0 }) {
 }
 
 export async function isLiked({ ids }) {
+  const identities = ids.map(id => ({ id, ...trackIdentity(id) }));
+  const songs = identities.filter(item => !item.program);
+  const result = Object.fromEntries(ids.map(id => [id, false]));
+  // The host also asks about episode IDs. This read-only podcast integration
+  // does not export likeEpisode and must not query song likes for episodes.
+  if (!songs.length) return result;
   currentSession();
-  if (!session.cookies.MUSIC_U) return Object.fromEntries(ids.map((id) => [id, false]));
+  if (!session.cookies.MUSIC_U) return result;
   const liked = new Set(await likedIDs());
-  return Object.fromEntries(ids.map((id) => [id, liked.has(String(id))]));
+  for (const item of songs) result[item.id] = liked.has(item.audio);
+  return result;
 }
 
 export async function like({ id, on }) {
+  const identity = trackIdentity(id);
+  if (identity.program) throw fail("unsupported", "暂不支持喜欢或取消喜欢播客节目");
   await requireAccount();
-  await eapi("/api/radio/like", { alg: "itembased", trackId: idOf(id), like: String(!!on), time: "3" });
+  await eapi("/api/radio/like", { alg: "itembased", trackId: identity.audio, like: String(!!on), time: "3" });
   likedCache = null;
 }
 
+export async function comments({ trackId, offset = 0 }) {
+  const identity = trackIdentity(trackId);
+  const data = await request(`/api/v1/resource/comments/${identity.thread}`, {
+    limit: PAGE_SIZE, offset: pageOffset(offset),
+  }, { keepSession: true });
+  // Hot comments overlap the chronological list. Adding them here would make
+  // the host skip comments when it advances by the number already displayed.
+  return { comments: (data.comments || []).map(toComment), total: data.total || 0, more: !!data.more };
+}
+
 export async function lyrics({ id }) {
-  const data = await request("/api/song/lyric", { id: idOf(id), lv: 1, tv: -1 });
+  const identity = trackIdentity(id);
+  if (identity.program) return { lrc: "", translation: "" };
+  const data = await request("/api/song/lyric", { id: identity.audio, lv: 1, tv: -1 });
   return { lrc: data.lrc?.lyric || "", translation: data.tlyric?.lyric || "" };
 }
 
 export async function stream({ id, quality = "high" }) {
-  id = idOf(id);
+  id = trackIdentity(id).audio;
+  if (!id) throw fail("unavailable", "该播客节目没有可播放的音频");
   const generation = epoch;
   const key = `${generation}:${id}:${quality}`;
   if (pendingStreams.has(key)) return pendingStreams.get(key);

@@ -8,7 +8,7 @@ The NetEase API protocol and data mappings are adapted from:
 - Original project: https://github.com/egoist/mygo-cloudmusic
 - Upstream author: egoist and contributors; preserved fork: sogud.
 - Reference commit: `b13f52a2a2ff0746502b85b9c4c7fa1e86a1c385`.
-- Files consulted: `internal/netease/eapi.go`, `auth.go`, `netease.go`, `catalog.go`.
+- Files consulted: `internal/netease/eapi.go`, `auth.go`, `netease.go`, `catalog.go`, `podcast.go`, `subscriptions.go`.
 - Upstream license: GNU Affero General Public License version 3.
 
 Modifications made on 2026-11-06: ported Go requests to MyGo Music's JavaScript
@@ -30,3 +30,8 @@ Recommendation endpoint shapes and FM modes were also checked against
 AkinoKaede/mygo-music-netease-cloud-music, commit
 `c988df7f4d787c1a133ba66e1f4f9dd71a2650cf` (`index.js`, AGPL-3.0),
 and the public playlist metadata returned by NetEase for private radar.
+
+Modifications made on 2026-11-07: added read-only comment pages, subscribed
+podcasts and episode browsing, and kept program identity separate from its
+audio ID for playback and comments; retained server cookie updates on
+transient playback refusals for the existing bounded retry.
