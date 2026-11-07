@@ -679,8 +679,20 @@ export async function comments({ trackId, offset = 0 }) {
 export async function lyrics({ id }) {
   const identity = trackIdentity(id);
   if (identity.program) return { lrc: "", translation: "" };
+  const activeSession = currentSession();
+  const generation = epoch;
   const data = await request("/api/song/lyric", { id: identity.audio, lv: 1, tv: -1 });
-  return { lrc: data.lrc?.lyric || "", translation: data.tlyric?.lyric || "" };
+  const lrc = data.lrc?.lyric || "";
+  const translation = data.tlyric?.lyric || "";
+  if (lrc.trim()) return { lrc, translation };
+  // Some songs have empty web lyrics while the desktop endpoint has LRC.
+  // Do not treat that empty response as proof that the song is instrumental.
+  if (activeSession !== session || generation !== epoch) throw new Error("账号状态已改变，请重试");
+  const desktop = await eapi("/api/song/lyric/v1", {
+    id: identity.audio, cp: false, tv: 0, lv: 0, rv: 0, kv: 0, yv: 0, ytv: 0, yrv: 0,
+  }, { session: activeSession, keepSession: true });
+  if (activeSession !== session || generation !== epoch) throw new Error("账号状态已改变，请重试");
+  return { lrc: desktop.lrc?.lyric || "", translation: desktop.tlyric?.lyric || translation };
 }
 
 export async function stream({ id, quality = "high" }) {
